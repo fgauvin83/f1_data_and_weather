@@ -1,0 +1,84 @@
+name: F1 Météo Pipeline
+ 
+on:
+  # Lance automatiquement toutes les 2h le dimanche et lundi (jours de GP)
+  schedule:
+    - cron: "0 */2 * * 0,1"   # Dimanche et lundi, toutes les 2h
+    - cron: "0 10 * * 5"      # Vendredi 10h UTC — prévision pré-course
+ 
+  # Permet aussi de lancer manuellement depuis GitHub
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode (auto / postrace / prerace / clim)"
+        required: true
+        default: "auto"
+      gp:
+        description: "Nom du GP (ex: Monaco)"
+        required: false
+      session:
+        description: "Session (R, Q, FP1...)"
+        required: false
+        default: "R"
+      date:
+        description: "Date de course YYYY-MM-DD (mode prerace)"
+        required: false
+ 
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+ 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+ 
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+ 
+      - name: Restore FastF1 cache
+        uses: actions/cache@v4
+        with:
+          path: cache/fastf1
+          key: fastf1-${{ runner.os }}-${{ hashFiles('pipeline.py') }}
+          restore-keys: fastf1-${{ runner.os }}-
+ 
+      - name: Run pipeline (auto)
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'auto' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python pipeline.py --mode auto --output output
+ 
+      - name: Run pipeline (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode != 'auto' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python pipeline.py \
+            --mode ${{ inputs.mode }} \
+            --gp "${{ inputs.gp }}" \
+            --session ${{ inputs.session }} \
+            --date "${{ inputs.date }}" \
+            --output output
+ 
+      - name: Upload plots as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: f1-meteo-plots-${{ github.run_id }}
+          path: output/
+          retention-days: 30
+ 
+      # Optionnel : commit les plots dans le repo pour GitHub Pages
+      - name: Commit plots to repo
+        run: |
+          git config user.name "F1MeteoBot"
+          git config user.email "bot@f1meteo.data"
+          git add output/
+          git diff --staged --quiet || git commit -m "Auto: plots $(date +'%Y-%m-%d %H:%M')"
+          git push
+        continue-on-error: true  # Ne bloque pas si rien à committer
